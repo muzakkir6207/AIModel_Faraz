@@ -1,0 +1,5 @@
+numpy>=1.26
+psutil>=5.9
+onnxruntime==1.23.1
+grpcio>=1.67,<1.68
+tritonclient[grpc]==2.61.0

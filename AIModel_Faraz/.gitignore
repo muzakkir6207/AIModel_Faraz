@@ -1,0 +1,13 @@
+# TensorFlow SavedModel / large artifacts
+models/resnet50/
+
+# Python venvs & caches
+venvs/
+__pycache__/
+*.pyc
+
+# local TF/venv stuff
+models/resnet50/
+venvs/
+__pycache__/
+*.pyc
