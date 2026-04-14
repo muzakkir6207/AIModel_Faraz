@@ -1,6 +1,6 @@
 # GPU Workload for `aimodel`
 
-This directory contains a standalone GPU load generator for the `aimodel` namespace.
+This directory contains the GPU load-generation bundle for `aimodel`.
 It is separate from `ort-server`.
 
 The important distinction is:
@@ -8,50 +8,77 @@ The important distinction is:
 - `ort-server` is not generating the GPU load.
 - `resnet50-gpu-loadgen` is generating the GPU load.
 
-## Files
+## Recommended Way To Run Load
 
-- `gpu_workload/loadgen.py`: Python load generator that uses `onnxruntime-gpu`
-- `gpu_workload/k8s/loadgen-deployment.yaml`: Kubernetes deployment for the load generator
-- `gpu_workload/README.md`: this document
+Use the launcher script and pass the runtime at execution time.
+That is the intended interface now.
 
-## What This Workload Does
+```bash
+cd ~/AIModel_Faraz
+./gpu_workload/run_load_job.sh <duration-seconds> [parallelism]
+```
 
-- Loads the same ResNet50 ONNX model from `/models/resnet50/1/model.onnx`
-- Uses `CUDAExecutionProvider`
-- Runs continuous inference on the shared H100 GPU
-- Creates load in separate pods so you can later attribute GPU metrics per pod
+Examples:
+
+```bash
+./gpu_workload/run_load_job.sh 600
+./gpu_workload/run_load_job.sh 300 1
+./gpu_workload/run_load_job.sh 900 2
+```
+
+Arguments:
+
+- `duration-seconds`: how long each load pod should generate GPU load
+- `parallelism`: how many pods to run in parallel, default `2`
+
+## What The Launcher Does
+
+`gpu_workload/run_load_job.sh` creates a one-shot Kubernetes Job at runtime.
+The Job name is generated dynamically, so each run is separate.
+
+For each run, it creates pods that:
+
+- request `nvidia.com/gpu: 1`
+- use `runtimeClassName: nvidia`
+- install `onnxruntime-gpu==1.20.1`
+- run `gpu_workload/loadgen.py`
+- pass your requested duration through `DURATION_SECONDS`
+- stop automatically when that duration is reached
+
+The Job also has:
+
+- `restartPolicy: Never`
+- `backoffLimit: 0`
+- `ttlSecondsAfterFinished: 120`
+
+So it does not keep consuming GPU indefinitely.
 
 ## How The GPU Load Is Generated
 
-1. Apply `gpu_workload/k8s/loadgen-deployment.yaml`.
-2. Kubernetes starts the deployment `resnet50-gpu-loadgen` in namespace `aimodel`.
-3. Each pod requests `nvidia.com/gpu: 1` and uses `runtimeClassName: nvidia`, so it gets a shared GPU slot from time-slicing.
-4. Each pod starts the image `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime`.
-5. The container startup command installs `onnxruntime-gpu==1.20.1`.
-6. The same startup command then runs `python /workspace/gpu_workload/loadgen.py`.
-7. `LD_LIBRARY_PATH` is set so ONNX Runtime can find cuDNN from PyTorch and activate `CUDAExecutionProvider`.
-8. `loadgen.py` opens `/models/resnet50/1/model.onnx`.
-9. `loadgen.py` creates one ONNX Runtime CUDA session per worker thread.
-10. Each worker warms up the model for `WARMUP` iterations.
-11. After warmup, each worker loops forever:
-    - generate input
-    - run `session.run(...)` on GPU
-    - record latency and counters
-12. Every `STATS_INTERVAL` seconds, the process prints throughput and latency for that pod.
+1. You run `./gpu_workload/run_load_job.sh <duration-seconds> [parallelism]`.
+2. The script creates a Kubernetes Job in namespace `aimodel`.
+3. Each Job pod gets a shared GPU slot through the NVIDIA time-slicing setup.
+4. The container starts `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime`.
+5. The container installs `onnxruntime-gpu==1.20.1`.
+6. The container runs `python /workspace/gpu_workload/loadgen.py`.
+7. `loadgen.py` loads `/models/resnet50/1/model.onnx`.
+8. `loadgen.py` creates one ONNX Runtime CUDA session per worker thread.
+9. Each worker performs warmup iterations.
+10. After warmup, each worker loops: generate input, run `session.run(...)` on GPU, record latency, and increment counters.
+11. Once `DURATION_SECONDS` is reached, the process exits and the Job completes.
 
-## Current Manifest Defaults
+## Current Default Runtime Settings
 
-The current deployment manifest is configured with:
+The generated Job uses these default pod settings:
 
-- `replicas: 2`
 - `BATCH_SIZE=16`
 - `WORKERS=4`
 - `WARMUP=10`
 - `STATS_INTERVAL=5`
-- `RANDOM_INPUT_FLAG=--random-input`
 - `GPU_MEM_LIMIT_MB=2048`
+- `RANDOM_INPUT_FLAG=--random-input`
 
-That means the current setup is effectively:
+With `parallelism=2`, the effective shape is:
 
 - 2 pods
 - 1 container per pod
@@ -59,23 +86,21 @@ That means the current setup is effectively:
 - 4 CUDA-backed ORT workers per process
 - total 8 concurrent CUDA inference workers on the shared H100
 
-## Deploy
+## Watch A Run
+
+After starting a run:
 
 ```bash
-kubectl apply -f gpu_workload/k8s/loadgen-deployment.yaml
-kubectl rollout status deployment/resnet50-gpu-loadgen -n aimodel --timeout=300s
-kubectl get pods -n aimodel -l app=resnet50-gpu-loadgen -o wide
+kubectl get jobs -n aimodel
+kubectl get pods -n aimodel -l app=resnet50-gpu-loadgen -w
+kubectl logs -n aimodel -l app=resnet50-gpu-loadgen --all-containers=true -f
 ```
+
+The launcher also prints the exact `job-name` selector to use.
 
 ## Verify That GPU Load Is Real
 
-Check the pod logs:
-
-```bash
-kubectl logs -n aimodel deployment/resnet50-gpu-loadgen -f --all-pods=true
-```
-
-You should see lines like:
+You should see pod log lines like:
 
 ```text
 torch.cuda.is_available=True device_count=1
@@ -104,7 +129,7 @@ Useful commands:
 
 ```bash
 kubectl get pods -n aimodel -l app=resnet50-gpu-loadgen -o wide
-kubectl logs -n aimodel deployment/resnet50-gpu-loadgen -f --all-pods=true
+kubectl logs -n aimodel -l app=resnet50-gpu-loadgen --all-containers=true -f
 kubectl exec -n aimodel <pod-name> -- ps -ef
 ```
 
@@ -114,55 +139,39 @@ Inside each pod you should see a process similar to:
 python /workspace/gpu_workload/loadgen.py --model-path /models/resnet50/1/model.onnx --input-name data --batch-size 16 --workers 4 ...
 ```
 
-## Why This Helps Per-Pod GPU Monitoring
+## Continuous Deployment Mode
 
-This design is useful because the GPU load is isolated in dedicated pods.
-That gives you a clean Kubernetes target for later GPU attribution.
+A continuous Deployment manifest still exists at:
 
-For example, if your monitoring stack can attribute GPU usage by pod or container, the correct target is:
+- `gpu_workload/k8s/loadgen-deployment.yaml`
 
-- pod: `resnet50-gpu-loadgen-*`
-- container: `loadgen`
+But it is intentionally safe now:
 
-## Tune The Load
+- `replicas: 0`
+- it will not consume GPU unless you explicitly scale it up
 
-To push more or less load, update the environment variables in `gpu_workload/k8s/loadgen-deployment.yaml`.
-The main knobs are:
-
-- `BATCH_SIZE`
-- `WORKERS`
-- `replicas`
-- `GPU_MEM_LIMIT_MB`
-- `SLEEP_MS`
-- `DURATION_SECONDS`
-
-Examples:
-
-```bash
-kubectl scale deployment/resnet50-gpu-loadgen -n aimodel --replicas=1
-kubectl scale deployment/resnet50-gpu-loadgen -n aimodel --replicas=2
-```
-
-After changing the manifest:
+Manual start:
 
 ```bash
 kubectl apply -f gpu_workload/k8s/loadgen-deployment.yaml
-kubectl rollout status deployment/resnet50-gpu-loadgen -n aimodel --timeout=300s
+kubectl scale deployment/resnet50-gpu-loadgen -n aimodel --replicas=2
 ```
 
-## Stop Or Remove The Load
-
-Scale down without deleting:
+Manual stop:
 
 ```bash
 kubectl scale deployment/resnet50-gpu-loadgen -n aimodel --replicas=0
 ```
 
-Delete completely:
+## Why This Helps Per-Pod GPU Monitoring
 
-```bash
-kubectl delete -f gpu_workload/k8s/loadgen-deployment.yaml
-```
+This design isolates the GPU load in dedicated pods.
+That gives you a clean Kubernetes target for GPU attribution later.
+
+The correct attribution target is:
+
+- pod: `resnet50-gpu-loadgen-*`
+- container: `loadgen`
 
 ## Important Note
 
