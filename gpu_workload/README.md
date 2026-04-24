@@ -8,6 +8,10 @@ The important distinction is:
 - `ort-server` is not generating the GPU load.
 - `resnet50-gpu-loadgen` is generating the GPU load.
 
+For the controlled testcase matrix, validated workflow, and recommended
+execution order, see
+[`../load_testing/README.md`](/home/user/AIModel_Faraz/load_testing/README.md).
+
 ## Recommended Way To Run Load
 
 Use the launcher script and pass the runtime at execution time.
@@ -15,21 +19,75 @@ That is the intended interface now.
 
 ```bash
 cd ~/AIModel_Faraz
+./export_model.sh
 ./gpu_workload/run_load_job.sh <duration-seconds> [parallelism]
+./gpu_workload/run_load_job.sh <duration-seconds> --percent-load <1-100> [--instance-count N] [--max-workers-per-pod N]
+./gpu_workload/run_load_job.sh <duration-seconds> --percent-loads <P1,P2,...> [--max-workers-per-pod N]
 ```
 
 Examples:
 
 ```bash
+./export_model.sh
 ./gpu_workload/run_load_job.sh 600
 ./gpu_workload/run_load_job.sh 300 1
 ./gpu_workload/run_load_job.sh 900 2
+./gpu_workload/run_load_job.sh 600 --percent-load 10 --instance-count 1 --max-workers-per-pod 10
+./gpu_workload/run_load_job.sh 600 --percent-load 20 --instance-count 3 --max-workers-per-pod 10
+./gpu_workload/run_load_job.sh 600 --percent-loads 10,20,30 --max-workers-per-pod 10
 ```
 
-Arguments:
+Primary controls:
 
 - `duration-seconds`: how long each load pod should generate GPU load
-- `parallelism`: how many pods to run in parallel, default `2`
+- `parallelism` or `--instance-count`: how many pods to run in parallel
+- `--percent-load`: requested uniform load per pod
+- `--percent-loads`: requested varied load per pod
+- `--max-workers-per-pod`: reference worker budget for `100%` requested load
+
+Percent mapping:
+
+- `10%` with `--max-workers-per-pod 10` maps to `1` worker per pod
+- `20%` with `--max-workers-per-pod 10` maps to `2` workers per pod
+- `40%` with `--max-workers-per-pod 10` maps to `4` workers per pod
+- `100%` with `--max-workers-per-pod 10` maps to `10` workers per pod
+
+The script prints the actual worker mapping for every percent-based run.
+These percentages are requested control levels, not guaranteed GPU utilization
+percentages.
+
+Optional per-run environment overrides:
+
+- `JOB_NAME_PREFIX`
+- `INPUT_NAME`
+- `BATCH_SIZE`
+- `WORKERS`
+- `WARMUP`
+- `STATS_INTERVAL`
+- `SLEEP_MS`
+- `GPU_MEM_LIMIT_MB`
+- `RANDOM_INPUT_FLAG`
+
+Example:
+
+```bash
+WORKERS=6 BATCH_SIZE=16 JOB_NAME_PREFIX=tc20 ./gpu_workload/run_load_job.sh 600 2
+```
+
+Equivalent percent-based example:
+
+```bash
+./gpu_workload/run_load_job.sh 600 --percent-load 60 --instance-count 2 --max-workers-per-pod 10
+```
+
+The launcher expects the exported model file at:
+
+- host path: `~/AIModel_Faraz/model/resnet50.onnx`
+- container path: `/models/resnet50.onnx`
+- default input name: `input`
+
+If the model directory is missing, the launcher now exits locally with an
+actionable error instead of creating a stuck Kubernetes Job.
 
 ## What The Launcher Does
 
@@ -61,7 +119,7 @@ So it does not keep consuming GPU indefinitely.
 4. The container starts `pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime`.
 5. The container installs `onnxruntime-gpu==1.20.1`.
 6. The container runs `python /workspace/gpu_workload/loadgen.py`.
-7. `loadgen.py` loads `/models/resnet50/1/model.onnx`.
+7. `loadgen.py` loads `/models/resnet50.onnx`.
 8. `loadgen.py` creates one ONNX Runtime CUDA session per worker thread.
 9. Each worker performs warmup iterations.
 10. After warmup, each worker loops: generate input, run `session.run(...)` on GPU, record latency, and increment counters.
@@ -136,7 +194,7 @@ kubectl exec -n aimodel <pod-name> -- ps -ef
 Inside each pod you should see a process similar to:
 
 ```bash
-python /workspace/gpu_workload/loadgen.py --model-path /models/resnet50/1/model.onnx --input-name data --batch-size 16 --workers 4 ...
+python /workspace/gpu_workload/loadgen.py --model-path /models/resnet50.onnx --input-name input --batch-size 16 --workers 4 ...
 ```
 
 ## Continuous Deployment Mode

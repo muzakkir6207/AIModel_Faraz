@@ -10,11 +10,11 @@ fi
 source venv/bin/activate
 python -m pip -q install --upgrade pip
 
-# CPU-only wheels + ONNX lib required by exporter
+# CPU-only wheels + ONNX libs required by the current torch exporter
 pip install --index-url https://download.pytorch.org/whl/cpu \
   torch torchvision \
   --no-cache-dir
-pip install onnx --no-cache-dir   # <-- add this line
+pip install onnx onnxscript --no-cache-dir
 
 # export
 python export_resnet_onnx.py --arch resnet50 --opset 13 --dynamic-batch --out model/resnet50.onnx

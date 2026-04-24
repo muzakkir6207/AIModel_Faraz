@@ -50,8 +50,8 @@ class Stats:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-path", default="/models/resnet50/1/model.onnx")
-    parser.add_argument("--input-name", default="data")
+    parser.add_argument("--model-path", default="/models/resnet50.onnx")
+    parser.add_argument("--input-name", default="input")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--height", type=int, default=224)
@@ -84,26 +84,57 @@ def create_session(model_path: str, gpu_mem_limit_mb: int) -> ort.InferenceSessi
     return session
 
 
+def resolve_input_name(session: ort.InferenceSession, requested_input_name: str) -> str:
+    session_input_names = [model_input.name for model_input in session.get_inputs()]
+    if requested_input_name in session_input_names:
+        print(f"session input_name={requested_input_name}", flush=True)
+        return requested_input_name
+    if len(session_input_names) == 1:
+        resolved_input_name = session_input_names[0]
+        print(
+            f"requested input_name={requested_input_name} not found; using model input_name={resolved_input_name}",
+            flush=True,
+        )
+        return resolved_input_name
+    raise ValueError(
+        f"Requested input_name={requested_input_name} not found. model inputs={session_input_names}"
+    )
+
+
 def worker_main(
     worker_id: int,
     args: argparse.Namespace,
     stop_event: threading.Event,
     stats: Stats,
 ) -> None:
-    session = create_session(args.model_path, args.gpu_mem_limit_mb)
+    try:
+        session = create_session(args.model_path, args.gpu_mem_limit_mb)
+        input_name = resolve_input_name(session, args.input_name)
+    except Exception as exc:
+        stats.record_error()
+        stop_event.set()
+        print(f"worker={worker_id} startup_error={exc}", flush=True)
+        return
+
     output_names = [out.name for out in session.get_outputs()]
     shape = (args.batch_size, 3, args.height, args.width)
     input_tensor = np.random.rand(*shape).astype(np.float32)
 
-    for _ in range(args.warmup):
-        session.run(output_names, {args.input_name: input_tensor})
+    try:
+        for _ in range(args.warmup):
+            session.run(output_names, {input_name: input_tensor})
+    except Exception as exc:
+        stats.record_error()
+        stop_event.set()
+        print(f"worker={worker_id} warmup_error={exc}", flush=True)
+        return
 
     while not stop_event.is_set():
         if args.random_input:
             input_tensor = np.random.rand(*shape).astype(np.float32)
         start = time.perf_counter()
         try:
-            session.run(output_names, {args.input_name: input_tensor})
+            session.run(output_names, {input_name: input_tensor})
         except Exception as exc:
             stats.record_error()
             print(f"worker={worker_id} error={exc}", flush=True)

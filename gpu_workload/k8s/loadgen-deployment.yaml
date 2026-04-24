@@ -28,7 +28,7 @@ spec:
           set -euo pipefail
           python -m pip install --no-cache-dir --root-user-action=ignore onnxruntime-gpu==1.20.1
           exec python /workspace/gpu_workload/loadgen.py \
-            --model-path /models/resnet50/1/model.onnx \
+            --model-path /models/resnet50.onnx \
             --input-name "${INPUT_NAME}" \
             --batch-size "${BATCH_SIZE}" \
             --workers "${WORKERS}" \
@@ -42,7 +42,7 @@ spec:
         - name: LD_LIBRARY_PATH
           value: /opt/conda/lib/python3.11/site-packages/torch/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
         - name: INPUT_NAME
-          value: data
+          value: input
         - name: BATCH_SIZE
           value: "16"
         - name: WORKERS

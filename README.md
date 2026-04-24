@@ -3,6 +3,9 @@
 This repository exports a ResNet50 model to ONNX, serves it with ONNX Runtime
 Server, and provides scripts for local benchmarking and metrics collection.
 
+For the controlled GPU load-test workflow used in Kubernetes, see
+[`load_testing/README.md`](/home/user/AIModel_Faraz/load_testing/README.md).
+
 ## Local quickstart
 
 Install Docker first, then run:
